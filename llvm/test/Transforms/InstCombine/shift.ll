@@ -2009,8 +2009,8 @@ define i32 @ashr_sdiv_extra_use(i32 %x) {
 
 define i32 @shl1_cttz(i32 %x) {
 ; CHECK-LABEL: @shl1_cttz(
-; CHECK-NEXT:    [[TZ:%.*]] = call i32 @llvm.cttz.i32(i32 [[X:%.*]], i1 true), !range [[RNG0:![0-9]+]]
-; CHECK-NEXT:    [[SHL:%.*]] = shl nuw i32 1, [[TZ]]
+; CHECK-NEXT:    [[NEG:%.*]] = sub i32 0, [[X:%.*]]
+; CHECK-NEXT:    [[SHL:%.*]] = and i32 [[NEG]], [[X]]
 ; CHECK-NEXT:    ret i32 [[SHL]]
 ;
   %tz = call i32 @llvm.cttz.i32(i32 %x, i1 true)
@@ -2020,8 +2020,8 @@ define i32 @shl1_cttz(i32 %x) {
 
 define <2 x i8> @shl1_cttz_vec(<2 x i8> %x) {
 ; CHECK-LABEL: @shl1_cttz_vec(
-; CHECK-NEXT:    [[TZ:%.*]] = call <2 x i8> @llvm.cttz.v2i8(<2 x i8> [[X:%.*]], i1 false)
-; CHECK-NEXT:    [[SHL:%.*]] = shl nuw <2 x i8> <i8 1, i8 1>, [[TZ]]
+; CHECK-NEXT:    [[NEG:%.*]] = sub <2 x i8> zeroinitializer, [[X:%.*]]
+; CHECK-NEXT:    [[SHL:%.*]] = and <2 x i8> [[NEG]], [[X]]
 ; CHECK-NEXT:    ret <2 x i8> [[SHL]]
 ;
   %tz = call <2 x i8> @llvm.cttz.v2i8(<2 x i8> %x, i1 false)
@@ -2031,8 +2031,8 @@ define <2 x i8> @shl1_cttz_vec(<2 x i8> %x) {
 
 define <2 x i8> @shl1_cttz_vec_poison(<2 x i8> %x) {
 ; CHECK-LABEL: @shl1_cttz_vec_poison(
-; CHECK-NEXT:    [[TZ:%.*]] = call <2 x i8> @llvm.cttz.v2i8(<2 x i8> [[X:%.*]], i1 false)
-; CHECK-NEXT:    [[SHL:%.*]] = shl nuw <2 x i8> <i8 1, i8 poison>, [[TZ]]
+; CHECK-NEXT:    [[NEG:%.*]] = sub <2 x i8> zeroinitializer, [[X:%.*]]
+; CHECK-NEXT:    [[SHL:%.*]] = and <2 x i8> [[NEG]], [[X]]
 ; CHECK-NEXT:    ret <2 x i8> [[SHL]]
 ;
   %tz = call <2 x i8> @llvm.cttz.v2i8(<2 x i8> %x, i1 false)
@@ -2040,9 +2040,11 @@ define <2 x i8> @shl1_cttz_vec_poison(<2 x i8> %x) {
   ret <2 x i8> %shl
 }
 
+; negative test - extra use
+
 define i32 @shl1_cttz_extra_use(i32 %x) {
 ; CHECK-LABEL: @shl1_cttz_extra_use(
-; CHECK-NEXT:    [[TZ:%.*]] = call i32 @llvm.cttz.i32(i32 [[X:%.*]], i1 false), !range [[RNG0]]
+; CHECK-NEXT:    [[TZ:%.*]] = call i32 @llvm.cttz.i32(i32 [[X:%.*]], i1 false), !range [[RNG0:![0-9]+]]
 ; CHECK-NEXT:    call void @use_i32(i32 [[TZ]])
 ; CHECK-NEXT:    [[SHL:%.*]] = shl nuw i32 1, [[TZ]]
 ; CHECK-NEXT:    ret i32 [[SHL]]
@@ -2053,6 +2055,8 @@ define i32 @shl1_cttz_extra_use(i32 %x) {
   ret i32 %shl
 }
 
+; negative test - must be shift-left of 1
+
 define i32 @shl2_cttz(i32 %x) {
 ; CHECK-LABEL: @shl2_cttz(
 ; CHECK-NEXT:    [[TZ:%.*]] = call i32 @llvm.cttz.i32(i32 [[X:%.*]], i1 true), !range [[RNG0]]
@@ -2062,4 +2066,49 @@ define i32 @shl2_cttz(i32 %x) {
   %tz = call i32 @llvm.cttz.i32(i32 %x, i1 true)
   %shl = shl i32 2, %tz
   ret i32 %shl
+}
+
+; shift (X, amt | bitwidth - 1) -> shift (X, bitwidth - 1)
+define i6 @shl_or7_eq_shl7(i6 %x, i6 %c) {
+; CHECK-LABEL: @shl_or7_eq_shl7(
+; CHECK-NEXT:    [[Y:%.*]] = shl nsw i6 [[X:%.*]], 5
+; CHECK-NEXT:    ret i6 [[Y]]
+;
+  %amt = or i6 %c, 5
+  ;; nsw not needed for transform, just check that we propagate.
+  %y = shl nsw i6 %x, %amt
+  ret i6 %y
+}
+
+define <2 x i8> @lshr_vec_or7_eq_shl7(<2 x i8> %x, <2 x i8> %c) {
+; CHECK-LABEL: @lshr_vec_or7_eq_shl7(
+; CHECK-NEXT:    [[Y:%.*]] = lshr exact <2 x i8> [[X:%.*]], <i8 7, i8 7>
+; CHECK-NEXT:    ret <2 x i8> [[Y]]
+;
+  %amt = or <2 x i8> %c, <i8 7, i8 7>
+  ;; exact not needed for transform, just check that we propagate.
+  %y = lshr exact <2 x i8> %x, %amt
+  ret <2 x i8> %y
+}
+
+define <2 x i8> @ashr_vec_or7_eq_ashr7(<2 x i8> %x, <2 x i8> %c) {
+; CHECK-LABEL: @ashr_vec_or7_eq_ashr7(
+; CHECK-NEXT:    [[Y:%.*]] = ashr <2 x i8> [[X:%.*]], <i8 7, i8 7>
+; CHECK-NEXT:    ret <2 x i8> [[Y]]
+;
+  %amt = or <2 x i8> %c, <i8 7, i8 7>
+  %y = ashr <2 x i8> %x, %amt
+  ret <2 x i8> %y
+}
+
+; Negative test not bitwidth - 1
+define <2 x i8> @ashr_vec_or6_fail(<2 x i8> %x, <2 x i8> %c) {
+; CHECK-LABEL: @ashr_vec_or6_fail(
+; CHECK-NEXT:    [[AMT:%.*]] = or <2 x i8> [[C:%.*]], <i8 6, i8 6>
+; CHECK-NEXT:    [[Y:%.*]] = ashr <2 x i8> [[X:%.*]], [[AMT]]
+; CHECK-NEXT:    ret <2 x i8> [[Y]]
+;
+  %amt = or <2 x i8> %c, <i8 6, i8 6>
+  %y = ashr <2 x i8> %x, %amt
+  ret <2 x i8> %y
 }

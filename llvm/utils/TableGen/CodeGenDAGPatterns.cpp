@@ -218,7 +218,7 @@ bool TypeSetByHwMode::operator==(const TypeSetByHwMode &VTS) const {
   bool IsSimple = isSimple();
   bool VTSIsSimple = VTS.isSimple();
   if (IsSimple && VTSIsSimple)
-    return *begin() == *VTS.begin();
+    return getSimple() == VTS.getSimple();
 
   // Speedup: We have a default if the set is simple.
   bool HaveDefault = IsSimple || hasDefault();
@@ -355,15 +355,12 @@ bool TypeSetByHwMode::intersect(SetType &Out, const SetType &In) {
 }
 
 bool TypeSetByHwMode::validate() const {
-#ifndef NDEBUG
   if (empty())
     return true;
   bool AllEmpty = true;
   for (const auto &I : *this)
     AllEmpty &= I.second.empty();
   return !AllEmpty;
-#endif
-  return true;
 }
 
 // --- TypeInfer
@@ -813,8 +810,8 @@ bool TypeInfer::EnforceSameSize(TypeSetByHwMode &A, TypeSetByHwMode &B) {
 void TypeInfer::expandOverloads(TypeSetByHwMode &VTS) {
   ValidateOnExit _1(VTS, *this);
   const TypeSetByHwMode &Legal = getLegalTypes();
-  assert(Legal.isDefaultOnly() && "Default-mode only expected");
-  const TypeSetByHwMode::SetType &LegalTypes = Legal.get(DefaultMode);
+  assert(Legal.isSimple() && "Default-mode only expected");
+  const TypeSetByHwMode::SetType &LegalTypes = Legal.getSimple();
 
   for (auto &I : VTS)
     expandOverloads(I.second, LegalTypes);
@@ -822,56 +819,41 @@ void TypeInfer::expandOverloads(TypeSetByHwMode &VTS) {
 
 void TypeInfer::expandOverloads(TypeSetByHwMode::SetType &Out,
                                 const TypeSetByHwMode::SetType &Legal) {
-  std::set<MVT> Ovs;
-  for (MVT T : Out) {
-    if (!T.isOverloaded())
-      continue;
-
-    Ovs.insert(T);
-    // MachineValueTypeSet allows iteration and erasing.
-    Out.erase(T);
-  }
-
-  for (MVT Ov : Ovs) {
-    switch (Ov.SimpleTy) {
-      case MVT::iPTRAny:
-        Out.insert(MVT::iPTR);
-        return;
-      case MVT::iAny:
-        for (MVT T : MVT::integer_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        for (MVT T : MVT::integer_fixedlen_vector_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        for (MVT T : MVT::integer_scalable_vector_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        return;
-      case MVT::fAny:
-        for (MVT T : MVT::fp_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        for (MVT T : MVT::fp_fixedlen_vector_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        for (MVT T : MVT::fp_scalable_vector_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        return;
-      case MVT::vAny:
-        for (MVT T : MVT::vector_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        return;
-      case MVT::Any:
-        for (MVT T : MVT::all_valuetypes())
-          if (Legal.count(T))
-            Out.insert(T);
-        return;
-      default:
-        break;
-    }
+  if (Out.count(MVT::iPTRAny)) {
+    Out.erase(MVT::iPTRAny);
+    Out.insert(MVT::iPTR);
+  } else if (Out.count(MVT::iAny)) {
+    Out.erase(MVT::iAny);
+    for (MVT T : MVT::integer_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
+    for (MVT T : MVT::integer_fixedlen_vector_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
+    for (MVT T : MVT::integer_scalable_vector_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
+  } else if (Out.count(MVT::fAny)) {
+    Out.erase(MVT::fAny);
+    for (MVT T : MVT::fp_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
+    for (MVT T : MVT::fp_fixedlen_vector_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
+    for (MVT T : MVT::fp_scalable_vector_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
+  } else if (Out.count(MVT::vAny)) {
+    Out.erase(MVT::vAny);
+    for (MVT T : MVT::vector_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
+  } else if (Out.count(MVT::Any)) {
+    Out.erase(MVT::Any);
+    for (MVT T : MVT::all_valuetypes())
+      if (Legal.count(T))
+        Out.insert(T);
   }
 }
 
@@ -884,26 +866,26 @@ const TypeSetByHwMode &TypeInfer::getLegalTypes() {
       LegalTypes.insert(I.second);
     LegalTypesCached = true;
   }
-  assert(LegalCache.isDefaultOnly() && "Default-mode only expected");
+  assert(LegalCache.isSimple() && "Default-mode only expected");
   return LegalCache;
 }
 
-#ifndef NDEBUG
 TypeInfer::ValidateOnExit::~ValidateOnExit() {
   if (Infer.Validate && !VTS.validate()) {
-    dbgs() << "Type set is empty for each HW mode:\n"
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+    errs() << "Type set is empty for each HW mode:\n"
               "possible type contradiction in the pattern below "
               "(use -print-records with llvm-tblgen to see all "
               "expanded records).\n";
     Infer.TP.dump();
-    dbgs() << "Generated from record:\n";
+    errs() << "Generated from record:\n";
     Infer.TP.getRecord()->dump();
+#endif
     PrintFatalError(Infer.TP.getRecord()->getLoc(),
                     "Type set is empty for each HW mode in '" +
                         Infer.TP.getRecord()->getName() + "'");
   }
 }
-#endif
 
 
 //===----------------------------------------------------------------------===//
@@ -1523,22 +1505,17 @@ std::string PatternToMatch::getPredicateCheck() const {
   getPredicateRecords(PredicateRecs);
 
   SmallString<128> PredicateCheck;
+  raw_svector_ostream OS(PredicateCheck);
+  ListSeparator LS(" && ");
   for (Record *Pred : PredicateRecs) {
     StringRef CondString = Pred->getValueAsString("CondString");
     if (CondString.empty())
       continue;
-    if (!PredicateCheck.empty())
-      PredicateCheck += " && ";
-    PredicateCheck += "(";
-    PredicateCheck += CondString;
-    PredicateCheck += ")";
+    OS << LS << '(' << CondString << ')';
   }
 
-  if (!HwModeFeatures.empty()) {
-    if (!PredicateCheck.empty())
-      PredicateCheck += " && ";
-    PredicateCheck += HwModeFeatures;
-  }
+  if (!HwModeFeatures.empty())
+    OS << LS << HwModeFeatures;
 
   return std::string(PredicateCheck);
 }
@@ -1793,7 +1770,7 @@ bool TreePatternNode::ContainsUnresolvedType(TreePattern &TP) const {
 
 bool TreePatternNode::hasProperTypeByHwMode() const {
   for (const TypeSetByHwMode &S : Types)
-    if (!S.isDefaultOnly())
+    if (!S.isSimple())
       return true;
   for (const TreePatternNodePtr &C : Children)
     if (C->hasProperTypeByHwMode())
@@ -1997,7 +1974,17 @@ void TreePatternNode::dump() const {
 bool TreePatternNode::isIsomorphicTo(const TreePatternNode *N,
                                      const MultipleUseVarSet &DepVars) const {
   if (N == this) return true;
-  if (N->isLeaf() != isLeaf() || getExtTypes() != N->getExtTypes() ||
+  if (N->isLeaf() != isLeaf())
+    return false;
+
+  // Check operator of non-leaves early since it can be cheaper than checking
+  // types.
+  if (!isLeaf())
+    if (N->getOperator() != getOperator() ||
+        N->getNumChildren() != getNumChildren())
+      return false;
+
+  if (getExtTypes() != N->getExtTypes() ||
       getPredicateCalls() != N->getPredicateCalls() ||
       getTransformFn() != N->getTransformFn())
     return false;
@@ -2005,16 +1992,13 @@ bool TreePatternNode::isIsomorphicTo(const TreePatternNode *N,
   if (isLeaf()) {
     if (DefInit *DI = dyn_cast<DefInit>(getLeafValue())) {
       if (DefInit *NDI = dyn_cast<DefInit>(N->getLeafValue())) {
-        return ((DI->getDef() == NDI->getDef())
-                && (DepVars.find(getName()) == DepVars.end()
-                    || getName() == N->getName()));
+        return ((DI->getDef() == NDI->getDef()) &&
+                (!DepVars.contains(getName()) || getName() == N->getName()));
       }
     }
     return getLeafValue() == N->getLeafValue();
   }
 
-  if (N->getOperator() != getOperator() ||
-      N->getNumChildren() != getNumChildren()) return false;
   for (unsigned i = 0, e = getNumChildren(); i != e; ++i)
     if (!getChild(i)->isIsomorphicTo(N->getChild(i), DepVars))
       return false;
@@ -2026,13 +2010,13 @@ bool TreePatternNode::isIsomorphicTo(const TreePatternNode *N,
 TreePatternNodePtr TreePatternNode::clone() const {
   TreePatternNodePtr New;
   if (isLeaf()) {
-    New = std::make_shared<TreePatternNode>(getLeafValue(), getNumTypes());
+    New = makeIntrusiveRefCnt<TreePatternNode>(getLeafValue(), getNumTypes());
   } else {
     std::vector<TreePatternNodePtr> CChildren;
     CChildren.reserve(Children.size());
     for (unsigned i = 0, e = getNumChildren(); i != e; ++i)
       CChildren.push_back(getChild(i)->clone());
-    New = std::make_shared<TreePatternNode>(getOperator(), std::move(CChildren),
+    New = makeIntrusiveRefCnt<TreePatternNode>(getOperator(), std::move(CChildren),
                                             getNumTypes());
   }
   New->setName(getName());
@@ -2087,14 +2071,13 @@ void TreePatternNode::SubstituteFormalArguments(
 /// fragments, return the set of inlined versions (this can be more than
 /// one if a PatFrags record has multiple alternatives).
 void TreePatternNode::InlinePatternFragments(
-  TreePatternNodePtr T, TreePattern &TP,
-  std::vector<TreePatternNodePtr> &OutAlternatives) {
+    TreePattern &TP, std::vector<TreePatternNodePtr> &OutAlternatives) {
 
   if (TP.hasError())
     return;
 
   if (isLeaf()) {
-    OutAlternatives.push_back(T);  // nothing to do.
+    OutAlternatives.push_back(this); // nothing to do.
     return;
   }
 
@@ -2102,16 +2085,16 @@ void TreePatternNode::InlinePatternFragments(
 
   if (!Op->isSubClassOf("PatFrags")) {
     if (getNumChildren() == 0) {
-      OutAlternatives.push_back(T);
+      OutAlternatives.push_back(this);
       return;
     }
 
     // Recursively inline children nodes.
-    std::vector<std::vector<TreePatternNodePtr> > ChildAlternatives;
-    ChildAlternatives.resize(getNumChildren());
+    std::vector<std::vector<TreePatternNodePtr>> ChildAlternatives(
+        getNumChildren());
     for (unsigned i = 0, e = getNumChildren(); i != e; ++i) {
       TreePatternNodePtr Child = getChildShared(i);
-      Child->InlinePatternFragments(Child, TP, ChildAlternatives[i]);
+      Child->InlinePatternFragments(TP, ChildAlternatives[i]);
       // If there are no alternatives for any child, there are no
       // alternatives for this expression as whole.
       if (ChildAlternatives[i].empty())
@@ -2127,15 +2110,15 @@ void TreePatternNode::InlinePatternFragments(
     }
 
     // The end result is an all-pairs construction of the resultant pattern.
-    std::vector<unsigned> Idxs;
-    Idxs.resize(ChildAlternatives.size());
+    std::vector<unsigned> Idxs(ChildAlternatives.size());
     bool NotDone;
     do {
       // Create the variant and add it to the output list.
       std::vector<TreePatternNodePtr> NewChildren;
+      NewChildren.reserve(ChildAlternatives.size());
       for (unsigned i = 0, e = ChildAlternatives.size(); i != e; ++i)
         NewChildren.push_back(ChildAlternatives[i][Idxs[i]]);
-      TreePatternNodePtr R = std::make_shared<TreePatternNode>(
+      TreePatternNodePtr R = makeIntrusiveRefCnt<TreePatternNode>(
           getOperator(), std::move(NewChildren), getNumTypes());
 
       // Copy over properties.
@@ -2173,7 +2156,7 @@ void TreePatternNode::InlinePatternFragments(
   TreePattern *Frag = TP.getDAGPatterns().getPatternFragment(Op);
 
   // Verify that we are passing the right number of operands.
-  if (Frag->getNumArgs() != Children.size()) {
+  if (Frag->getNumArgs() != getNumChildren()) {
     TP.error("'" + Op->getName() + "' fragment requires " +
              Twine(Frag->getNumArgs()) + " operands!");
     return;
@@ -2221,7 +2204,7 @@ void TreePatternNode::InlinePatternFragments(
 
     // The fragment we inlined could have recursive inlining that is needed.  See
     // if there are any pattern fragments in it and inline them as needed.
-    FragTree->InlinePatternFragments(FragTree, TP, OutAlternatives);
+    FragTree->InlinePatternFragments(TP, OutAlternatives);
   }
 }
 
@@ -2878,7 +2861,7 @@ TreePatternNodePtr TreePattern::ParseTreePattern(Init *TheInit,
         OpName);
 
     // Input argument?
-    TreePatternNodePtr Res = std::make_shared<TreePatternNode>(DI, 1);
+    TreePatternNodePtr Res = makeIntrusiveRefCnt<TreePatternNode>(DI, 1);
     if (R->getName() == "node" && !OpName.empty()) {
       if (OpName.empty())
         error("'node' argument requires a name to match with operand list");
@@ -2893,7 +2876,7 @@ TreePatternNodePtr TreePattern::ParseTreePattern(Init *TheInit,
   if (isa<UnsetInit>(TheInit)) {
     if (OpName.empty())
       error("'?' argument requires a name to match with operand list");
-    TreePatternNodePtr Res = std::make_shared<TreePatternNode>(TheInit, 1);
+    TreePatternNodePtr Res = makeIntrusiveRefCnt<TreePatternNode>(TheInit, 1);
     Args.push_back(std::string(OpName));
     Res->setName(OpName);
     return Res;
@@ -2904,7 +2887,7 @@ TreePatternNodePtr TreePattern::ParseTreePattern(Init *TheInit,
       error("Constant int or bit argument should not have a name!");
     if (isa<BitInit>(TheInit))
       TheInit = TheInit->convertInitializerTo(IntRecTy::get(RK));
-    return std::make_shared<TreePatternNode>(TheInit, 1);
+    return makeIntrusiveRefCnt<TreePatternNode>(TheInit, 1);
   }
 
   if (BitsInit *BI = dyn_cast<BitsInit>(TheInit)) {
@@ -3008,7 +2991,7 @@ TreePatternNodePtr TreePattern::ParseTreePattern(Init *TheInit,
     else // Otherwise, no chain.
       Operator = getDAGPatterns().get_intrinsic_wo_chain_sdnode();
 
-    Children.insert(Children.begin(), std::make_shared<TreePatternNode>(
+    Children.insert(Children.begin(), makeIntrusiveRefCnt<TreePatternNode>(
                                           IntInit::get(RK, IID), 1));
   }
 
@@ -3034,7 +3017,7 @@ TreePatternNodePtr TreePattern::ParseTreePattern(Init *TheInit,
   }
 
   TreePatternNodePtr Result =
-      std::make_shared<TreePatternNode>(Operator, std::move(Children),
+      makeIntrusiveRefCnt<TreePatternNode>(Operator, std::move(Children),
                                         NumResults);
   Result->setName(OpName);
 
@@ -3919,7 +3902,7 @@ void CodeGenDAGPatterns::parseInstructionPattern(
       OpNode->setTransformFn(nullptr);
       std::vector<TreePatternNodePtr> Children;
       Children.push_back(OpNode);
-      OpNode = std::make_shared<TreePatternNode>(Xform, std::move(Children),
+      OpNode = makeIntrusiveRefCnt<TreePatternNode>(Xform, std::move(Children),
                                                  OpNode->getNumTypes());
     }
 
@@ -3930,7 +3913,7 @@ void CodeGenDAGPatterns::parseInstructionPattern(
     I.error("Input operand $" + InstInputs.begin()->first +
             " occurs in pattern but not in operands list!");
 
-  TreePatternNodePtr ResultPattern = std::make_shared<TreePatternNode>(
+  TreePatternNodePtr ResultPattern = makeIntrusiveRefCnt<TreePatternNode>(
       I.getRecord(), std::move(ResultNodeOperands),
       GetNumNodeResults(I.getRecord(), *this));
   // Copy fully inferred output node types to instruction result pattern.
@@ -3954,9 +3937,8 @@ void CodeGenDAGPatterns::parseInstructionPattern(
   // Create and insert the instruction.
   // FIXME: InstImpResults should not be part of DAGInstruction.
   Record *R = I.getRecord();
-  DAGInsts.emplace(std::piecewise_construct, std::forward_as_tuple(R),
-                   std::forward_as_tuple(Results, Operands, InstImpResults,
-                                         SrcPattern, ResultPattern));
+  DAGInsts.try_emplace(R, std::move(Results), std::move(Operands),
+                       std::move(InstImpResults), SrcPattern, ResultPattern);
 
   LLVM_DEBUG(I.dump());
 }
@@ -3996,9 +3978,8 @@ void CodeGenDAGPatterns::ParseInstructions() {
       }
 
       // Create and insert the instruction.
-      std::vector<Record*> ImpResults;
-      Instructions.insert(std::make_pair(Instr,
-                            DAGInstruction(Results, Operands, ImpResults)));
+      Instructions.try_emplace(Instr, std::move(Results), std::move(Operands),
+                               std::vector<Record *>());
       continue;  // no pattern.
     }
 
@@ -4252,7 +4233,7 @@ static TreePatternNodePtr PromoteXForms(TreePatternNodePtr N) {
       N->setTransformFn(nullptr);
       std::vector<TreePatternNodePtr> Children;
       Children.push_back(PromoteXForms(N));
-      return std::make_shared<TreePatternNode>(Xform, std::move(Children),
+      return makeIntrusiveRefCnt<TreePatternNode>(Xform, std::move(Children),
                                                N->getNumTypes());
   }
 
@@ -4456,14 +4437,14 @@ void CodeGenDAGPatterns::ExpandHwModeBasedTypes() {
 
       // Fill the map entry for this mode.
       const HwMode &HM = CGH.getMode(M);
-      AppendPattern(P, M, "(MF->getSubtarget().checkFeatures(\"" + HM.Features + "\"))");
+      AppendPattern(P, M, HM.Predicates);
 
       // Add negations of the HM's predicates to the default predicate.
       if (!DefaultCheck.empty())
         DefaultCheck += " && ";
-      DefaultCheck += "(!(MF->getSubtarget().checkFeatures(\"";
-      DefaultCheck += HM.Features;
-      DefaultCheck += "\")))";
+      DefaultCheck += "!(";
+      DefaultCheck += HM.Predicates;
+      DefaultCheck += ")";
     }
 
     bool HasDefault = Modes.count(DefaultMode);
@@ -4524,8 +4505,7 @@ static void CombineChildVariants(
       return;
 
   // The end result is an all-pairs construction of the resultant pattern.
-  std::vector<unsigned> Idxs;
-  Idxs.resize(ChildVariants.size());
+  std::vector<unsigned> Idxs(ChildVariants.size());
   bool NotDone;
   do {
 #ifndef NDEBUG
@@ -4541,7 +4521,7 @@ static void CombineChildVariants(
     std::vector<TreePatternNodePtr> NewChildren;
     for (unsigned i = 0, e = ChildVariants.size(); i != e; ++i)
       NewChildren.push_back(ChildVariants[i][Idxs[i]]);
-    TreePatternNodePtr R = std::make_shared<TreePatternNode>(
+    TreePatternNodePtr R = makeIntrusiveRefCnt<TreePatternNode>(
         Orig->getOperator(), std::move(NewChildren), Orig->getNumTypes());
 
     // Copy over properties.
@@ -4686,8 +4666,8 @@ static void GenerateVariantsOf(TreePatternNodePtr N,
   }
 
   // Compute permutations of all children.
-  std::vector<std::vector<TreePatternNodePtr>> ChildVariants;
-  ChildVariants.resize(N->getNumChildren());
+  std::vector<std::vector<TreePatternNodePtr>> ChildVariants(
+      N->getNumChildren());
   for (unsigned i = 0, e = N->getNumChildren(); i != e; ++i)
     GenerateVariantsOf(N->getChildShared(i), ChildVariants[i], CDP, DepVars);
 
@@ -4715,17 +4695,10 @@ static void GenerateVariantsOf(TreePatternNodePtr N,
     }
     // Consider the commuted order.
     if (NoRegisters) {
-      std::vector<std::vector<TreePatternNodePtr>> Variants;
-      unsigned i = 0;
-      if (isCommIntrinsic)
-        Variants.push_back(std::move(ChildVariants[i++])); // Intrinsic id.
-      Variants.push_back(std::move(ChildVariants[i + 1]));
-      Variants.push_back(std::move(ChildVariants[i]));
-      i += 2;
-      // Remaining operands are not commuted.
-      for (; i != N->getNumChildren(); ++i)
-        Variants.push_back(std::move(ChildVariants[i]));
-      CombineChildVariants(N, Variants, OutVariants, CDP, DepVars);
+      // Swap the first two operands after the intrinsic id, if present.
+      unsigned i = isCommIntrinsic ? 1 : 0;
+      std::swap(ChildVariants[i], ChildVariants[i + 1]);
+      CombineChildVariants(N, ChildVariants, OutVariants, CDP, DepVars);
     }
   }
 }
