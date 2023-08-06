@@ -73,8 +73,6 @@ CGDebugInfo::CGDebugInfo(CodeGenModule &CGM)
     : CGM(CGM), DebugKind(CGM.getCodeGenOpts().getDebugInfo()),
       DebugTypeExtRefs(CGM.getCodeGenOpts().DebugTypeExtRefs),
       DBuilder(CGM.getModule()) {
-  for (const auto &KV : CGM.getCodeGenOpts().DebugPrefixMap)
-    DebugPrefixMap[KV.first] = KV.second;
   CreateCompileUnit();
 }
 
@@ -470,12 +468,9 @@ llvm::DIFile *CGDebugInfo::createFile(
 }
 
 std::string CGDebugInfo::remapDIPath(StringRef Path) const {
-  if (DebugPrefixMap.empty())
-    return Path.str();
-
   SmallString<256> P = Path;
-  for (const auto &Entry : DebugPrefixMap)
-    if (llvm::sys::path::replace_path_prefix(P, Entry.first, Entry.second))
+  for (auto &[From, To] : llvm::reverse(CGM.getCodeGenOpts().DebugPrefixMap))
+    if (llvm::sys::path::replace_path_prefix(P, From, To))
       break;
   return P.str().str();
 }
@@ -528,6 +523,7 @@ void CGDebugInfo::CreateCompileUnit() {
   // Get absolute path name.
   SourceManager &SM = CGM.getContext().getSourceManager();
   auto &CGO = CGM.getCodeGenOpts();
+  const LangOptions &LO = CGM.getLangOpts();
   std::string MainFileName = CGO.MainFileName;
   if (MainFileName.empty())
     MainFileName = "<stdin>";
@@ -542,9 +538,15 @@ void CGDebugInfo::CreateCompileUnit() {
     MainFileDir = std::string(MainFile->getDir().getName());
     if (!llvm::sys::path::is_absolute(MainFileName)) {
       llvm::SmallString<1024> MainFileDirSS(MainFileDir);
-      llvm::sys::path::append(MainFileDirSS, MainFileName);
-      MainFileName =
-          std::string(llvm::sys::path::remove_leading_dotslash(MainFileDirSS));
+      llvm::sys::path::Style Style =
+          LO.UseTargetPathSeparator
+              ? (CGM.getTarget().getTriple().isOSWindows()
+                     ? llvm::sys::path::Style::windows_backslash
+                     : llvm::sys::path::Style::posix)
+              : llvm::sys::path::Style::native;
+      llvm::sys::path::append(MainFileDirSS, Style, MainFileName);
+      MainFileName = std::string(
+          llvm::sys::path::remove_leading_dotslash(MainFileDirSS, Style));
     }
     // If the main file name provided is identical to the input file name, and
     // if the input file is a preprocessed source, use the module name for
@@ -560,7 +562,6 @@ void CGDebugInfo::CreateCompileUnit() {
   }
 
   llvm::dwarf::SourceLanguage LangTag;
-  const LangOptions &LO = CGM.getLangOpts();
   if (LO.CPlusPlus) {
     if (LO.ObjC)
       LangTag = llvm::dwarf::DW_LANG_ObjC_plus_plus;
@@ -636,17 +637,21 @@ void CGDebugInfo::CreateCompileUnit() {
       SDK = *It;
   }
 
+  llvm::DICompileUnit::DebugNameTableKind NameTableKind =
+      static_cast<llvm::DICompileUnit::DebugNameTableKind>(
+          CGOpts.DebugNameTable);
+  if (CGM.getTarget().getTriple().isNVPTX())
+    NameTableKind = llvm::DICompileUnit::DebugNameTableKind::None;
+  else if (CGM.getTarget().getTriple().getVendor() == llvm::Triple::Apple)
+    NameTableKind = llvm::DICompileUnit::DebugNameTableKind::Apple;
+
   // Create new compile unit.
   TheCU = DBuilder.createCompileUnit(
       LangTag, CUFile, CGOpts.EmitVersionIdentMetadata ? Producer : "",
       LO.Optimize || CGOpts.PrepareForLTO || CGOpts.PrepareForThinLTO,
       CGOpts.DwarfDebugFlags, RuntimeVers, CGOpts.SplitDwarfFile, EmissionKind,
       DwoId, CGOpts.SplitDwarfInlining, CGOpts.DebugInfoForProfiling,
-      CGM.getTarget().getTriple().isNVPTX()
-          ? llvm::DICompileUnit::DebugNameTableKind::None
-          : static_cast<llvm::DICompileUnit::DebugNameTableKind>(
-                CGOpts.DebugNameTable),
-      CGOpts.DebugRangesBaseAddress, remapDIPath(Sysroot), SDK);
+      NameTableKind, CGOpts.DebugRangesBaseAddress, remapDIPath(Sysroot), SDK);
 }
 
 llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
@@ -1940,27 +1945,8 @@ llvm::DISubprogram *CGDebugInfo::CreateCXXMemberFunction(
     ContainingType = RecordTy;
   }
 
-  // We're checking for deleted C++ special member functions
-  // [Ctors,Dtors, Copy/Move]
-  auto checkAttrDeleted = [&](const auto *Method) {
-    if (Method->getCanonicalDecl()->isDeleted())
-      SPFlags |= llvm::DISubprogram::SPFlagDeleted;
-  };
-
-  switch (Method->getKind()) {
-
-  case Decl::CXXConstructor:
-  case Decl::CXXDestructor:
-    checkAttrDeleted(Method);
-    break;
-  case Decl::CXXMethod:
-    if (Method->isCopyAssignmentOperator() ||
-        Method->isMoveAssignmentOperator())
-      checkAttrDeleted(Method);
-    break;
-  default:
-    break;
-  }
+  if (Method->getCanonicalDecl()->isDeleted())
+    SPFlags |= llvm::DISubprogram::SPFlagDeleted;
 
   if (Method->isNoReturn())
     Flags |= llvm::DINode::FlagNoReturn;
@@ -3306,7 +3292,7 @@ llvm::DIType *CGDebugInfo::CreateType(const MemberPointerType *Ty,
         Flags);
 
   const FunctionProtoType *FPT =
-      Ty->getPointeeType()->getAs<FunctionProtoType>();
+      Ty->getPointeeType()->castAs<FunctionProtoType>();
   return DBuilder.createMemberPointerType(
       getOrCreateInstanceMethodType(
           CXXMethodDecl::getThisType(FPT, Ty->getMostRecentCXXRecordDecl()),
@@ -3836,8 +3822,8 @@ void CGDebugInfo::collectFunctionDeclProps(GlobalDecl GD, llvm::DIFile *Unit,
   // subprogram name, no need to have it at all unless coverage is enabled or
   // debug is set to more than just line tables or extra debug info is needed.
   if (LinkageName == Name ||
-      (!CGM.getCodeGenOpts().EmitGcovArcs &&
-       !CGM.getCodeGenOpts().EmitGcovNotes &&
+      (CGM.getCodeGenOpts().CoverageNotesFile.empty() &&
+       CGM.getCodeGenOpts().CoverageDataFile.empty() &&
        !CGM.getCodeGenOpts().DebugInfoForProfiling &&
        !CGM.getCodeGenOpts().PseudoProbeForProfiling &&
        DebugKind <= llvm::codegenoptions::DebugLineTablesOnly))

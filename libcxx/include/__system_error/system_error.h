@@ -22,7 +22,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-class _LIBCPP_TYPE_VIS system_error : public runtime_error {
+class _LIBCPP_EXPORTED_FROM_ABI system_error : public runtime_error {
   error_code __ec_;
 
 public:
@@ -32,7 +32,7 @@ public:
   system_error(int __ev, const error_category& __ecat, const string& __what_arg);
   system_error(int __ev, const error_category& __ecat, const char* __what_arg);
   system_error(int __ev, const error_category& __ecat);
-  system_error(const system_error&) _NOEXCEPT = default;
+  _LIBCPP_HIDE_FROM_ABI system_error(const system_error&) _NOEXCEPT = default;
   ~system_error() _NOEXCEPT override;
 
   _LIBCPP_HIDE_FROM_ABI const error_code& code() const _NOEXCEPT { return __ec_; }
@@ -41,7 +41,7 @@ private:
   static string __init(const error_code&, string);
 };
 
-_LIBCPP_NORETURN _LIBCPP_FUNC_VIS void __throw_system_error(int __ev, const char* __what_arg);
+_LIBCPP_NORETURN _LIBCPP_EXPORTED_FROM_ABI void __throw_system_error(int __ev, const char* __what_arg);
 
 _LIBCPP_END_NAMESPACE_STD
 

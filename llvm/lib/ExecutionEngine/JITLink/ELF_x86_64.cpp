@@ -155,6 +155,7 @@ private:
 
     switch (ELFReloc) {
     case ELF::R_X86_64_PC32:
+    case ELF::R_X86_64_GOTPC32:
       Kind = x86_64::Delta32;
       break;
     case ELF::R_X86_64_PC64:
@@ -226,8 +227,10 @@ private:
 
 public:
   ELFLinkGraphBuilder_x86_64(StringRef FileName,
-                             const object::ELFFile<object::ELF64LE> &Obj)
-      : ELFLinkGraphBuilder(Obj, Triple("x86_64-unknown-linux"), FileName,
+                             const object::ELFFile<object::ELF64LE> &Obj,
+                             SubtargetFeatures Features)
+      : ELFLinkGraphBuilder(Obj, Triple("x86_64-unknown-linux"),
+                            std::move(Features), FileName,
                             x86_64::getEdgeKindName) {}
 };
 
@@ -293,6 +296,22 @@ private:
                                 Linkage::Strong, Scope::Local, false, true);
     }
 
+    // If we still haven't found a GOT symbol then double check the externals.
+    // We may have a GOT-relative reference but no GOT section, in which case
+    // we just need to point the GOT symbol at some address in this graph.
+    if (!GOTSymbol) {
+      for (auto *Sym : G.external_symbols()) {
+        if (Sym->getName() == ELFGOTSymbolName) {
+          auto Blocks = G.blocks();
+          if (!Blocks.empty()) {
+            G.makeAbsolute(*Sym, (*Blocks.begin())->getAddress());
+            GOTSymbol = Sym;
+            break;
+          }
+        }
+      }
+    }
+
     return Error::success();
   }
 
@@ -312,9 +331,14 @@ createLinkGraphFromELFObject_x86_64(MemoryBufferRef ObjectBuffer) {
   if (!ELFObj)
     return ELFObj.takeError();
 
+  auto Features = (*ELFObj)->getFeatures();
+  if (!Features)
+    return Features.takeError();
+
   auto &ELFObjFile = cast<object::ELFObjectFile<object::ELF64LE>>(**ELFObj);
   return ELFLinkGraphBuilder_x86_64((*ELFObj)->getFileName(),
-                                    ELFObjFile.getELFFile())
+                                    ELFObjFile.getELFFile(),
+                                    std::move(*Features))
       .buildGraph();
 }
 

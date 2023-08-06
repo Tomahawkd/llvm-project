@@ -234,39 +234,6 @@ TEST(RandomIRBuilderTest, Invokes) {
   }
 }
 
-TEST(RandomIRBuilderTest, FirstClassTypes) {
-  // Check that we never insert new source as a load from non first class
-  // or unsized type.
-
-  LLVMContext Ctx;
-  const char *SourceCode = "%Opaque = type opaque\n"
-                           "define void @test(i8* %ptr) {\n"
-                           "entry:\n"
-                           "  %tmp = bitcast i8* %ptr to i32* (i32*)*\n"
-                           "  %tmp1 = bitcast i8* %ptr to %Opaque*\n"
-                           "  ret void\n"
-                           "}";
-  auto M = parseAssembly(SourceCode, Ctx);
-
-  std::array<Type *, 1> Types = {Type::getInt8Ty(Ctx)};
-  RandomIRBuilder IB(Seed, Types);
-
-  Function &F = *M->getFunction("test");
-  BasicBlock &BB = *F.begin();
-  // Non first class type
-  Instruction *FuncPtr = &*BB.begin();
-  // Unsized type
-  Instruction *OpaquePtr = &*std::next(BB.begin());
-
-  for (int i = 0; i < 10; ++i) {
-    Value *V = IB.findOrCreateSource(BB, {FuncPtr, OpaquePtr});
-    // To make sure we are allowed to load from a global variable
-    if (LoadInst *LI = dyn_cast<LoadInst>(V)) {
-      EXPECT_NE(LI->getOperand(0), FuncPtr);
-    }
-  }
-}
-
 TEST(RandomIRBuilderTest, SwiftError) {
   // Check that we never pick swifterror value as a source for operation
   // other than load, store and call.
@@ -565,5 +532,84 @@ TEST(RandomIRBuilderTest, sinkToInstrinsic) {
     ASSERT_FALSE(verifyModule(*M, &errs()));
   }
   ASSERT_FALSE(Modified);
+}
+
+TEST(RandomIRBuilderTest, DoNotCallPointerWhenSink) {
+  const char *Source = "\n\
+        declare void @g()  \n\
+        define void @f(ptr %ptr) {  \n\
+        Entry:   \n\
+            call void @g()  \n\
+            ret void \n\
+        }";
+  LLVMContext Ctx;
+  std::mt19937 mt(Seed);
+  std::uniform_int_distribution<int> RandInt(INT_MIN, INT_MAX);
+
+  RandomIRBuilder IB(RandInt(mt), {});
+  std::unique_ptr<Module> M = parseAssembly(Source, Ctx);
+  Function &F = *M->getFunction("f");
+  BasicBlock &BB = F.getEntryBlock();
+  bool Modified = false;
+
+  Instruction *I = &*BB.begin();
+  for (int i = 0; i < 20; i++) {
+    Value *OldOperand = I->getOperand(0);
+    Value *Src = F.getArg(0);
+    IB.connectToSink(BB, {I}, Src);
+    Value *NewOperand = I->getOperand(0);
+    Modified |= (OldOperand != NewOperand);
+    ASSERT_FALSE(verifyModule(*M, &errs()));
+  }
+  ASSERT_FALSE(Modified);
+}
+
+TEST(RandomIRBuilderTest, SrcAndSinkWOrphanBlock) {
+  const char *Source = "\n\
+        define i1 @test(i1 %Bool, i32 %Int, i64 %Long) {   \n\
+        Entry:    \n\
+            %Eq0 = icmp eq i64 %Long, 0 \n\
+            br i1 %Eq0, label %True, label %False \n\
+        True: \n\
+            %Or = or i1 %Bool, %Eq0 \n\
+            ret i1 %Or \n\
+        False: \n\
+            %And = and i1 %Bool, %Eq0 \n\
+            ret i1 %And \n\
+        Orphan_1:  \n\
+            %NotBool = sub i1 1, %Bool \n\
+            ret i1 %NotBool \n\
+        Orphan_2:  \n\
+            %Le42 = icmp sle i32 %Int, 42 \n\
+            ret i1 %Le42 \n\
+        }";
+  LLVMContext Ctx;
+  std::mt19937 mt(Seed);
+  std::uniform_int_distribution<int> RandInt(INT_MIN, INT_MAX);
+  std::array<Type *, 3> IntTys(
+      {Type::getInt64Ty(Ctx), Type::getInt32Ty(Ctx), Type::getInt1Ty(Ctx)});
+  std::vector<Value *> Constants;
+  for (Type *IntTy : IntTys) {
+    for (size_t v : {1, 42}) {
+      Constants.push_back(ConstantInt::get(IntTy, v));
+    }
+  }
+  for (int i = 0; i < 10; i++) {
+    RandomIRBuilder IB(RandInt(mt), IntTys);
+    std::unique_ptr<Module> M = parseAssembly(Source, Ctx);
+    Function &F = *M->getFunction("test");
+    for (BasicBlock &BB : F) {
+      SmallVector<Instruction *, 4> Insts;
+      for (Instruction &I : BB) {
+        Insts.push_back(&I);
+      }
+      for (int j = 0; j < 10; j++) {
+        IB.findOrCreateSource(BB, Insts);
+      }
+      for (Value *V : Constants) {
+        IB.connectToSink(BB, Insts, V);
+      }
+    }
+  }
 }
 } // namespace

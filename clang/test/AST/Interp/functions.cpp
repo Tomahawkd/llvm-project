@@ -176,6 +176,38 @@ namespace FunctionReturnType {
 
   constexpr S s{ 12 };
   static_assert(s.fp == nullptr, ""); // zero-initialized function pointer.
+
+  constexpr int (*op)(int, int) = add;
+  constexpr bool b = op;
+  static_assert(op, "");
+  static_assert(!!op, "");
+  constexpr int (*op2)(int, int) = nullptr;
+  static_assert(!op2, "");
+}
+
+namespace Comparison {
+  void f(), g();
+  constexpr void (*pf)() = &f, (*pg)() = &g;
+
+  constexpr bool u13 = pf < pg; // ref-warning {{ordered comparison of function pointers}} \
+                                // ref-error {{must be initialized by a constant expression}} \
+                                // ref-note {{comparison between '&f' and '&g' has unspecified value}} \
+                                // expected-warning {{ordered comparison of function pointers}} \
+                                // expected-error {{must be initialized by a constant expression}} \
+                                // expected-note {{comparison between '&f' and '&g' has unspecified value}}
+
+  constexpr bool u14 = pf < (void(*)())nullptr; // ref-warning {{ordered comparison of function pointers}} \
+                                                // ref-error {{must be initialized by a constant expression}} \
+                                                // ref-note {{comparison between '&f' and 'nullptr' has unspecified value}} \
+                                                // expected-warning {{ordered comparison of function pointers}} \
+                                                // expected-error {{must be initialized by a constant expression}} \
+                                                // expected-note {{comparison between '&f' and 'nullptr' has unspecified value}}
+
+
+
+  static_assert(pf != pg, "");
+  static_assert(pf == &f, "");
+  static_assert(pg == &g, "");
 }
 
 }
@@ -231,4 +263,47 @@ namespace InvalidCall {
                    // ref-error {{must be initialized by a constant expression}} \
                    // ref-note {{in call to 'SS()'}}
 
+}
+
+namespace CallWithArgs {
+  /// This used to call problems during checkPotentialConstantExpression() runs.
+  constexpr void g(int a) {}
+  constexpr void f() {
+    g(0);
+  }
+}
+
+namespace ReturnLocalPtr {
+  constexpr int *p() {
+    int a = 12;
+    return &a; // ref-warning {{address of stack memory}} \
+               // expected-warning {{address of stack memory}}
+  }
+
+  /// GCC rejects the expression below, just like the new interpreter. The current interpreter
+  /// however accepts it and only warns about the function above returning an address to stack
+  /// memory. If we change the condition to 'p() != nullptr', it even succeeds.
+  static_assert(p() == nullptr, ""); // ref-error {{static assertion failed}} \
+                                     // expected-error {{not an integral constant expression}}
+
+  /// FIXME: The current interpreter emits diagnostics in the reference case below, but the
+  /// new one does not.
+  constexpr const int &p2() {
+    int a = 12; // ref-note {{declared here}}
+    return a; // ref-warning {{reference to stack memory associated with local variable}} \
+              // expected-warning {{reference to stack memory associated with local variable}}
+  }
+
+  static_assert(p2() == 12, ""); // ref-error {{not an integral constant expression}} \
+                                 // ref-note {{read of variable whose lifetime has ended}} \
+                                 // expected-error {{not an integral constant expression}}
+}
+
+namespace VoidReturn {
+  /// ReturnStmt with an expression in a void function used to cause problems.
+  constexpr void bar() {}
+  constexpr void foo() {
+    return bar();
+  }
+  static_assert((foo(),1) == 1, "");
 }

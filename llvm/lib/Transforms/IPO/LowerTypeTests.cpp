@@ -56,8 +56,6 @@
 #include "llvm/IR/Use.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
-#include "llvm/InitializePasses.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -419,10 +417,10 @@ class LowerTypeTestsModule {
 
   IntegerType *Int1Ty = Type::getInt1Ty(M.getContext());
   IntegerType *Int8Ty = Type::getInt8Ty(M.getContext());
-  PointerType *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
+  PointerType *Int8PtrTy = PointerType::getUnqual(M.getContext());
   ArrayType *Int8Arr0Ty = ArrayType::get(Type::getInt8Ty(M.getContext()), 0);
   IntegerType *Int32Ty = Type::getInt32Ty(M.getContext());
-  PointerType *Int32PtrTy = PointerType::getUnqual(Int32Ty);
+  PointerType *Int32PtrTy = PointerType::getUnqual(M.getContext());
   IntegerType *Int64Ty = Type::getInt64Ty(M.getContext());
   IntegerType *IntPtrTy = M.getDataLayout().getIntPtrType(M.getContext(), 0);
 
@@ -2271,9 +2269,9 @@ bool LowerTypeTestsModule::lower() {
     unsigned MaxUniqueId = 0;
     for (GlobalClassesTy::member_iterator MI = GlobalClasses.member_begin(I);
          MI != GlobalClasses.member_end(); ++MI) {
-      if (auto *MD = MI->dyn_cast<Metadata *>())
+      if (auto *MD = dyn_cast_if_present<Metadata *>(*MI))
         MaxUniqueId = std::max(MaxUniqueId, TypeIdInfo[MD].UniqueId);
-      else if (auto *BF = MI->dyn_cast<ICallBranchFunnel *>())
+      else if (auto *BF = dyn_cast_if_present<ICallBranchFunnel *>(*MI))
         MaxUniqueId = std::max(MaxUniqueId, BF->UniqueId);
     }
     Sets.emplace_back(I, MaxUniqueId);
@@ -2289,12 +2287,12 @@ bool LowerTypeTestsModule::lower() {
     for (GlobalClassesTy::member_iterator MI =
              GlobalClasses.member_begin(S.first);
          MI != GlobalClasses.member_end(); ++MI) {
-      if (MI->is<Metadata *>())
-        TypeIds.push_back(MI->get<Metadata *>());
-      else if (MI->is<GlobalTypeMember *>())
-        Globals.push_back(MI->get<GlobalTypeMember *>());
+      if (isa<Metadata *>(*MI))
+        TypeIds.push_back(cast<Metadata *>(*MI));
+      else if (isa<GlobalTypeMember *>(*MI))
+        Globals.push_back(cast<GlobalTypeMember *>(*MI));
       else
-        ICallBranchFunnels.push_back(MI->get<ICallBranchFunnel *>());
+        ICallBranchFunnels.push_back(cast<ICallBranchFunnel *>(*MI));
     }
 
     // Order type identifiers by unique ID for determinism. This ordering is

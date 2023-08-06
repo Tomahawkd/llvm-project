@@ -15,6 +15,7 @@ add_clang_library(clangTidyCppCoreGuidelinesModule
   InterfacesGlobalInitCheck.cpp
   MacroUsageCheck.cpp
   MisleadingCaptureDefaultByValueCheck.cpp
+  MissingStdForwardCheck.cpp
   NarrowingConversionsCheck.cpp
   NoMallocCheck.cpp
   OwningMemoryCheck.cpp
@@ -38,11 +39,13 @@ add_clang_library(clangTidyCppCoreGuidelinesModule
   clangTidy
   clangTidyMiscModule
   clangTidyModernizeModule
+  clangTidyPerformanceModule
   clangTidyReadabilityModule
   clangTidyUtils
 
   DEPENDS
   omp_gen
+  ClangDriverOptions
   )
 
 clang_target_link_libraries(clangTidyCppCoreGuidelinesModule

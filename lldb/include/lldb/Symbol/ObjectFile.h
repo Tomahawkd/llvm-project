@@ -9,7 +9,6 @@
 #ifndef LLDB_SYMBOL_OBJECTFILE_H
 #define LLDB_SYMBOL_OBJECTFILE_H
 
-#include "lldb/Core/FileSpecList.h"
 #include "lldb/Core/ModuleChild.h"
 #include "lldb/Core/PluginInterface.h"
 #include "lldb/Symbol/Symtab.h"
@@ -17,6 +16,7 @@
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/Endian.h"
 #include "lldb/Utility/FileSpec.h"
+#include "lldb/Utility/FileSpecList.h"
 #include "lldb/Utility/UUID.h"
 #include "lldb/lldb-private.h"
 #include "llvm/Support/Threading.h"
@@ -653,6 +653,12 @@ public:
   // be larger than what Section::GetFileSize reports.
   virtual size_t ReadSectionData(Section *section,
                                  DataExtractor &section_data);
+
+  // Returns the section data size. This is special-cased for PECOFF
+  // due to file alignment.
+  virtual size_t GetSectionDataSize(Section *section) {
+    return section->GetFileSize();
+  }
 
   /// Returns true if the object file exists only in memory.
   bool IsInMemory() const { return m_memory_addr != LLDB_INVALID_ADDRESS; }

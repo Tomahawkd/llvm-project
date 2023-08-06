@@ -330,9 +330,7 @@ void ModFileWriter::PutSymbol(
           [](const MiscDetails &) {},
           [&](const auto &) {
             PutEntity(decls_, symbol);
-            if (symbol.test(Symbol::Flag::OmpThreadprivate)) {
-              decls_ << "!$omp threadprivate(" << symbol.name() << ")\n";
-            }
+            PutDirective(decls_, symbol);
           },
       },
       symbol.details());
@@ -457,6 +455,31 @@ void ModFileWriter::PutSubprogram(const Symbol &symbol) {
     os << (isAbstract ? "abstract " : "") << "interface\n";
   }
   PutAttrs(os, prefixAttrs, nullptr, false, ""s, " "s);
+  if (auto attrs{details.cudaSubprogramAttrs()}) {
+    if (*attrs == common::CUDASubprogramAttrs::HostDevice) {
+      os << "attributes(host,device) ";
+    } else {
+      PutLower(os << "attributes(", common::EnumToString(*attrs)) << ") ";
+    }
+    if (!details.cudaLaunchBounds().empty()) {
+      os << "launch_bounds";
+      char sep{'('};
+      for (auto x : details.cudaLaunchBounds()) {
+        os << sep << x;
+        sep = ',';
+      }
+      os << ") ";
+    }
+    if (!details.cudaClusterDims().empty()) {
+      os << "cluster_dims";
+      char sep{'('};
+      for (auto x : details.cudaClusterDims()) {
+        os << sep << x;
+        sep = ',';
+      }
+      os << ") ";
+    }
+  }
   os << (details.isFunction() ? "function " : "subroutine ");
   os << symbol.name() << '(';
   int n = 0;
@@ -480,7 +503,6 @@ void ModFileWriter::PutSubprogram(const Symbol &symbol) {
     }
   }
   os << '\n';
-
   // walk symbols, collect ones needed for interface
   const Scope &scope{
       details.entryScope() ? *details.entryScope() : DEREF(symbol.scope())};
@@ -684,6 +706,37 @@ void ModFileWriter::PutObjectEntity(
   PutShape(os, details.coshape(), '[', ']');
   PutInit(os, symbol, details.init(), details.unanalyzedPDTComponentInit());
   os << '\n';
+  if (auto tkr{GetIgnoreTKR(symbol)}; !tkr.empty()) {
+    os << "!dir$ ignore_tkr(";
+    tkr.IterateOverMembers([&](common::IgnoreTKR tkr) {
+      switch (tkr) {
+        SWITCH_COVERS_ALL_CASES
+      case common::IgnoreTKR::Type:
+        os << 't';
+        break;
+      case common::IgnoreTKR::Kind:
+        os << 'k';
+        break;
+      case common::IgnoreTKR::Rank:
+        os << 'r';
+        break;
+      case common::IgnoreTKR::Device:
+        os << 'd';
+        break;
+      case common::IgnoreTKR::Managed:
+        os << 'm';
+        break;
+      case common::IgnoreTKR::Contiguous:
+        os << 'c';
+        break;
+      }
+    });
+    os << ") " << symbol.name() << '\n';
+  }
+  if (auto attr{details.cudaDataAttr()}) {
+    PutLower(os << "attributes(", common::EnumToString(*attr))
+        << ") " << symbol.name() << '\n';
+  }
 }
 
 void ModFileWriter::PutProcEntity(llvm::raw_ostream &os, const Symbol &symbol) {
@@ -817,6 +870,41 @@ llvm::raw_ostream &PutLower(llvm::raw_ostream &os, std::string_view str) {
     os << parser::ToLowerCaseLetter(c);
   }
   return os;
+}
+
+void PutOpenACCDirective(llvm::raw_ostream &os, const Symbol &symbol) {
+  if (symbol.test(Symbol::Flag::AccDeclare)) {
+    os << "!$acc declare ";
+    if (symbol.test(Symbol::Flag::AccCopy)) {
+      os << "copy";
+    } else if (symbol.test(Symbol::Flag::AccCopyIn)) {
+      os << "copyin";
+    } else if (symbol.test(Symbol::Flag::AccCopyOut)) {
+      os << "copyout";
+    } else if (symbol.test(Symbol::Flag::AccCreate)) {
+      os << "create";
+    } else if (symbol.test(Symbol::Flag::AccPresent)) {
+      os << "present";
+    } else if (symbol.test(Symbol::Flag::AccDevicePtr)) {
+      os << "deviceptr";
+    } else if (symbol.test(Symbol::Flag::AccDeviceResident)) {
+      os << "device_resident";
+    } else if (symbol.test(Symbol::Flag::AccLink)) {
+      os << "link";
+    }
+    os << "(" << symbol.name() << ")\n";
+  }
+}
+
+void PutOpenMPDirective(llvm::raw_ostream &os, const Symbol &symbol) {
+  if (symbol.test(Symbol::Flag::OmpThreadprivate)) {
+    os << "!$omp threadprivate(" << symbol.name() << ")\n";
+  }
+}
+
+void ModFileWriter::PutDirective(llvm::raw_ostream &os, const Symbol &symbol) {
+  PutOpenACCDirective(os, symbol);
+  PutOpenMPDirective(os, symbol);
 }
 
 struct Temp {
@@ -964,6 +1052,7 @@ Scope *ModFileReader::Read(const SourceName &name,
   options.isModuleFile = true;
   options.features.Enable(common::LanguageFeature::BackslashEscapes);
   options.features.Enable(common::LanguageFeature::OpenMP);
+  options.features.Enable(common::LanguageFeature::CUDA);
   if (!isIntrinsic.value_or(false) && !notAModule) {
     // The search for this module file will scan non-intrinsic module
     // directories.  If a directory is in both the intrinsic and non-intrinsic

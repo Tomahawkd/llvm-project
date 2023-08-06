@@ -894,7 +894,7 @@ protected:
 
         if (m_silently_skip_wp) {
           m_should_stop = false;
-          wp_sp->IncrementFalseAlarmsAndReviseHitCount();
+          wp_sp->UndoHitCount();
         }
 
         if (wp_sp->GetHitCount() <= wp_sp->GetIgnoreCount()) {
@@ -1456,7 +1456,8 @@ StopInfo::GetCrashingDereference(StopInfoSP &stop_info_sp,
     return ValueObjectSP();
   }
 
-  StackFrameSP frame_sp = thread_sp->GetSelectedFrame();
+  StackFrameSP frame_sp =
+      thread_sp->GetSelectedFrame(DoNoSelectMostRelevantFrame);
 
   if (!frame_sp) {
     return ValueObjectSP();

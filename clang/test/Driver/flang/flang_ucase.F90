@@ -13,7 +13,7 @@
 ! * (no type specified, resulting in an object file)
 
 ! All invocations should begin with flang -fc1, consume up to here.
-! ALL-LABEL: "{{[^"]*}}flang-new" "-fc1"
+! ALL-LABEL: "{{[^"]*}}flang-new{{[^"/]*}}" "-fc1"
 
 ! Check that f90 files are not treated as "previously preprocessed"
 ! ... in --driver-mode=flang.
@@ -34,7 +34,7 @@
 ! CHECK-EMIT-LLVM-IR-DAG: "-emit-llvm"
 ! CHECK-EMIT-LLVM-IR-DAG: "-o" "{{[^"]*}}.ll"
 
-! RUN: %clang --driver-mode=flang -### -emit-llvm          %s 2>&1 | FileCheck --check-prefixes=ALL,CHECK-EMIT-LLVM-BC %s
+! RUN: not %clang --driver-mode=flang -### -emit-llvm          %s 2>&1 | FileCheck --check-prefixes=ALL,CHECK-EMIT-LLVM-BC %s
 ! CHECK-EMIT-LLVM-BC-DAG: "-emit-llvm-bc"
 ! CHECK-EMIT-LLVM-BC-DAG: "-o" "{{[^"]*}}.bc"
 

@@ -798,12 +798,11 @@ VarDecl *Sema::createLambdaInitCaptureVarDecl(
   return NewVD;
 }
 
-void Sema::addInitCapture(LambdaScopeInfo *LSI, VarDecl *Var,
-                          bool isReferenceType) {
+void Sema::addInitCapture(LambdaScopeInfo *LSI, VarDecl *Var, bool ByRef) {
   assert(Var->isInitCapture() && "init capture flag should be set");
-  LSI->addCapture(Var, /*isBlock*/ false, isReferenceType,
-                  /*isNested*/ false, Var->getLocation(), SourceLocation(),
-                  Var->getType(), /*Invalid*/ false);
+  LSI->addCapture(Var, /*isBlock=*/false, ByRef,
+                  /*isNested=*/false, Var->getLocation(), SourceLocation(),
+                  Var->getType(), /*Invalid=*/false);
 }
 
 // Unlike getCurLambda, getCurrentLambdaScopeUnsafe doesn't
@@ -1169,11 +1168,15 @@ void Sema::ActOnLambdaExpressionAfterIntroducer(LambdaIntroducer &Intro,
             << C->Id << It->second->getBeginLoc()
             << FixItHint::CreateRemoval(
                    SourceRange(getLocForEndOfToken(PrevCaptureLoc), C->Loc));
-      } else
+        Var->setInvalidDecl();
+      } else if (Var && Var->isPlaceholderVar(getLangOpts())) {
+        DiagPlaceholderVariableDefinition(C->Loc);
+      } else {
         // Previous capture captured something different (one or both was
         // an init-capture): no fixit.
         Diag(C->Loc, diag::err_capture_more_than_once) << C->Id;
-      continue;
+        continue;
+      }
     }
 
     // Ignore invalid decls; they'll just confuse the code later.
@@ -1365,6 +1368,26 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
     PushOnScopeChains(P, CurScope);
   }
 
+  // C++23 [expr.prim.lambda.capture]p5:
+  // If an identifier in a capture appears as the declarator-id of a parameter
+  // of the lambda-declarator's parameter-declaration-clause or as the name of a
+  // template parameter of the lambda-expression's template-parameter-list, the
+  // program is ill-formed.
+  TemplateParameterList *TemplateParams =
+      getGenericLambdaTemplateParameterList(LSI, *this);
+  if (TemplateParams) {
+    for (const auto *TP : TemplateParams->asArray()) {
+      if (!TP->getIdentifier())
+        continue;
+      for (const auto &Capture : Intro.Captures) {
+        if (Capture.Id == TP->getIdentifier()) {
+          Diag(Capture.Loc, diag::err_template_param_shadow) << Capture.Id;
+          Diag(TP->getLocation(), diag::note_template_param_here);
+        }
+      }
+    }
+  }
+
   // C++20: dcl.decl.general p4:
   // The optional requires-clause ([temp.pre]) in an init-declarator or
   // member-declarator shall be present only if the declarator declares a
@@ -1402,6 +1425,10 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
       LSI->CallOperator->isConsteval()
           ? ExpressionEvaluationContext::ImmediateFunctionContext
           : ExpressionEvaluationContext::PotentiallyEvaluated);
+  ExprEvalContexts.back().InImmediateFunctionContext =
+      LSI->CallOperator->isConsteval();
+  ExprEvalContexts.back().InImmediateEscalatingFunctionContext =
+      getLangOpts().CPlusPlus20 && LSI->CallOperator->isImmediateEscalating();
 }
 
 void Sema::ActOnLambdaError(SourceLocation StartLoc, Scope *CurScope,
@@ -1609,6 +1636,11 @@ static void addFunctionPointerConversion(Sema &S, SourceRange IntroducerRange,
       CallOperator->getBody()->getEndLoc());
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
+
+  // A non-generic lambda may still be a templated entity. We need to preserve
+  // constraints when converting the lambda to a function pointer. See GH63181.
+  if (Expr *Requires = CallOperator->getTrailingRequiresClause())
+    Conversion->setTrailingRequiresClause(Requires);
 
   if (Class->isGenericLambda()) {
     // Create a template version of the conversion operator, using the template
@@ -1845,6 +1877,12 @@ bool Sema::DiagnoseUnusedLambdaCapture(SourceRange CaptureRange,
     return false;
 
   if (From.isVLATypeCapture())
+    return false;
+
+  // FIXME: maybe we should warn on these if we can find a sensible diagnostic
+  // message
+  if (From.isInitCapture() &&
+      From.getVariable()->isPlaceholderVar(getLangOpts()))
     return false;
 
   auto diag = Diag(From.getLocation(), diag::warn_unused_lambda_capture);

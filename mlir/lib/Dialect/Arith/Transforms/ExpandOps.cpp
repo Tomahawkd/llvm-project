@@ -179,8 +179,7 @@ public:
     Value select = rewriter.create<arith::SelectOp>(loc, cmp, lhs, rhs);
 
     // Handle the case where rhs is NaN: 'isNaN(rhs) ? rhs : select'.
-    Value isNaN = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::UNO,
-                                                 rhs, rhs);
+    Value isNaN = rewriter.create<arith::IsNanOp>(loc, rhs, op.getFastmath());
     rewriter.replaceOpWithNewOp<arith::SelectOp>(op, isNaN, rhs, select);
     return success();
   }
@@ -304,6 +303,11 @@ struct BFloat16TruncFOpConverter : public OpRewritePattern<arith::TruncFOp> {
 
 struct ArithExpandOpsPass
     : public arith::impl::ArithExpandOpsBase<ArithExpandOpsPass> {
+  ArithExpandOpsPass() = default;
+  ArithExpandOpsPass(const arith::ArithExpandOpsOptions& options) {
+    this->includeBf16 = options.includeBf16;
+  }
+
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     ConversionTarget target(getContext());
@@ -370,4 +374,9 @@ void mlir::arith::populateArithExpandOpsPatterns(RewritePatternSet &patterns) {
 
 std::unique_ptr<Pass> mlir::arith::createArithExpandOpsPass() {
   return std::make_unique<ArithExpandOpsPass>();
+}
+
+std::unique_ptr<Pass> mlir::arith::createArithExpandOpsPass(
+  const ArithExpandOpsOptions& options) {
+  return std::make_unique<ArithExpandOpsPass>(options);
 }

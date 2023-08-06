@@ -30,6 +30,7 @@
 #include "clang/Basic/XRayLists.h"
 #include "clang/Lex/PreprocessorOptions.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
@@ -378,8 +379,7 @@ private:
   /// multiversion function resolvers and ifuncs are defined and emitted.
   std::vector<GlobalDecl> MultiVersionFuncs;
 
-  typedef llvm::StringMap<llvm::TrackingVH<llvm::Constant> > ReplacementsTy;
-  ReplacementsTy Replacements;
+  llvm::MapVector<StringRef, llvm::TrackingVH<llvm::Constant>> Replacements;
 
   /// List of global values to be replaced with something else. Used when we
   /// want to replace a GlobalValue but can't identify it by its mangled name
@@ -589,8 +589,6 @@ private:
   MetadataTypeMap MetadataIdMap;
   MetadataTypeMap VirtualMetadataIdMap;
   MetadataTypeMap GeneralizedMetadataIdMap;
-
-  llvm::DenseMap<const llvm::Constant *, llvm::GlobalVariable *> RTTIProxyMap;
 
   // Helps squashing blocks of TopLevelStmtDecl into a single llvm::Function
   // when used with -fincremental-extensions.
@@ -928,6 +926,13 @@ public:
   // Return the function body address of the given function.
   llvm::Constant *GetFunctionStart(const ValueDecl *Decl);
 
+  // Return whether RTTI information should be emitted for this target.
+  bool shouldEmitRTTI(bool ForEH = false) {
+    return (ForEH || getLangOpts().RTTI) && !getLangOpts().CUDAIsDevice &&
+           !(getLangOpts().OpenMP && getLangOpts().OpenMPIsTargetDevice &&
+             getTriple().isNVPTX());
+  }
+
   /// Get the address of the RTTI descriptor for the given type.
   llvm::Constant *GetAddrOfRTTIDescriptor(QualType Ty, bool ForEH = false);
 
@@ -1013,11 +1018,6 @@ public:
 
   /// Return a pointer to a constant CFString object for the given string.
   ConstantAddress GetAddrOfConstantCFString(const StringLiteral *Literal);
-
-  /// Return a pointer to a constant NSString object for the given string. Or a
-  /// user defined String object as defined via
-  /// -fconstant-string-class=class_name option.
-  ConstantAddress GetAddrOfConstantString(const StringLiteral *Literal);
 
   /// Return a constant array for the given string.
   llvm::Constant *GetConstantArrayFromStringLiteral(const StringLiteral *E);
@@ -1272,6 +1272,8 @@ public:
   /// function which relies on particular fast-math attributes for correctness.
   /// It's up to you to ensure that this is safe.
   void addDefaultFunctionDefinitionAttributes(llvm::Function &F);
+  void mergeDefaultFunctionDefinitionAttributes(llvm::Function &F,
+                                                bool WillInternalize);
 
   /// Like the overload taking a `Function &`, but intended specifically
   /// for frontends that want to build on Clang's target-configuration logic.
@@ -1498,11 +1500,8 @@ public:
   ///
   /// A most-base class of a class C is defined as a recursive base class of C,
   /// including C itself, that does not have any bases.
-  std::vector<const CXXRecordDecl *>
+  SmallVector<const CXXRecordDecl *, 0>
   getMostBaseClasses(const CXXRecordDecl *RD);
-
-  llvm::GlobalVariable *
-  GetOrCreateRTTIProxyGlobalVariable(llvm::Constant *Addr);
 
   /// Get the declaration of std::terminate for the platform.
   llvm::FunctionCallee getTerminateFn();
@@ -1553,6 +1552,21 @@ public:
   /// because we'll lose all important information after each repl.
   void moveLazyEmissionStates(CodeGenModule *NewBuilder);
 
+  /// Emit the IR encoding to attach the CUDA launch bounds attribute to \p F.
+  void handleCUDALaunchBoundsAttr(llvm::Function *F,
+                                  const CUDALaunchBoundsAttr *A);
+
+  /// Emit the IR encoding to attach the AMD GPU flat-work-group-size attribute
+  /// to \p F. Alternatively, the work group size can be taken from a \p
+  /// ReqdWGS.
+  void handleAMDGPUFlatWorkGroupSizeAttr(
+      llvm::Function *F, const AMDGPUFlatWorkGroupSizeAttr *A,
+      const ReqdWorkGroupSizeAttr *ReqdWGS = nullptr);
+
+  /// Emit the IR encoding to attach the AMD GPU waves-per-eu attribute to \p F.
+  void handleAMDGPUWavesPerEUAttr(llvm::Function *F,
+                                  const AMDGPUWavesPerEUAttr *A);
+
 private:
   llvm::Constant *GetOrCreateLLVMFunction(
       StringRef MangledName, llvm::Type *Ty, GlobalDecl D, bool ForVTable,
@@ -1581,7 +1595,8 @@ private:
                         ForDefinition_t IsForDefinition = NotForDefinition);
 
   bool GetCPUAndFeaturesAttributes(GlobalDecl GD,
-                                   llvm::AttrBuilder &AttrBuilder);
+                                   llvm::AttrBuilder &AttrBuilder,
+                                   bool SetTargetFeatures = true);
   void setNonAliasAttributes(GlobalDecl GD, llvm::GlobalObject *GO);
 
   /// Set function attributes for a function declaration.
@@ -1711,7 +1726,7 @@ private:
 
   /// Emit the module flag metadata used to pass options controlling the
   /// the backend to LLVM.
-  void EmitBackendOptionsMetadata(const CodeGenOptions CodeGenOpts);
+  void EmitBackendOptionsMetadata(const CodeGenOptions &CodeGenOpts);
 
   /// Emits OpenCL specific Metadata e.g. OpenCL version.
   void EmitOpenCLMetadata();
@@ -1733,6 +1748,12 @@ private:
   /// Check whether we can use a "simpler", more core exceptions personality
   /// function.
   void SimplifyPersonality();
+
+  /// Helper function for getDefaultFunctionAttributes. Builds a set of function
+  /// attributes which can be simply added to a function.
+  void getTrivialDefaultFunctionAttributes(StringRef Name, bool HasOptnone,
+                                           bool AttrOnCallSite,
+                                           llvm::AttrBuilder &FuncAttrs);
 
   /// Helper function for ConstructAttributeList and
   /// addDefaultFunctionDefinitionAttributes.  Builds a set of function

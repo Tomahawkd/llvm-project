@@ -113,7 +113,8 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
 
   ThreadSP thread_sp =
       process_sp->GetThreadList().GetExpressionExecutionThread();
-  StackFrameSP frame_sp = thread_sp->GetSelectedFrame();
+  StackFrameSP frame_sp =
+      thread_sp->GetSelectedFrame(DoNoSelectMostRelevantFrame);
 
   if (!frame_sp)
     return StructuredData::ObjectSP();
@@ -151,12 +152,10 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
 
   addr_t pc =
       return_value_sp->GetValueForExpressionPath(".pc")->GetValueAsUnsigned(0);
-  /* commented out because rdar://problem/18533301
   addr_t bp =
   return_value_sp->GetValueForExpressionPath(".bp")->GetValueAsUnsigned(0);
   addr_t sp =
-  return_value_sp->GetValueForExpressionPath(".sp")->GetValueAsUnsigned(0);
-  */
+      return_value_sp->GetValueForExpressionPath(".sp")->GetValueAsUnsigned(0);
   addr_t address = return_value_sp->GetValueForExpressionPath(".address")
                        ->GetValueAsUnsigned(0);
   addr_t access_type =
@@ -176,10 +175,8 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
   dict->AddStringItem("instrumentation_class", "AddressSanitizer");
   dict->AddStringItem("stop_type", "fatal_error");
   dict->AddIntegerItem("pc", pc);
-  /* commented out because rdar://problem/18533301
   dict->AddIntegerItem("bp", bp);
   dict->AddIntegerItem("sp", sp);
-  */
   dict->AddIntegerItem("address", address);
   dict->AddIntegerItem("access_type", access_type);
   dict->AddIntegerItem("access_size", access_size);

@@ -3,6 +3,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Lex/Lexer.h"
+#include "llvm/ADT/StringExtras.h"
 #include <optional>
 
 using namespace clang;
@@ -662,6 +663,9 @@ void JSONNodeDumper::VisitVectorType(const VectorType *VT) {
   case VectorType::SveFixedLengthPredicateVector:
     JOS.attribute("vectorKind", "fixed-length sve predicate vector");
     break;
+  case VectorType::RVVFixedLengthDataVector:
+    JOS.attribute("vectorKind", "fixed-length rvv data vector");
+    break;
   }
 }
 
@@ -886,6 +890,7 @@ void JSONNodeDumper::VisitFunctionDecl(const FunctionDecl *FD) {
   attributeOnlyIfTrue("explicitlyDeleted", FD->isDeletedAsWritten());
   attributeOnlyIfTrue("constexpr", FD->isConstexpr());
   attributeOnlyIfTrue("variadic", FD->isVariadic());
+  attributeOnlyIfTrue("immediate", FD->isImmediateFunction());
 
   if (FD->isDefaulted())
     JOS.attribute("explicitlyDefaulted",
@@ -1246,6 +1251,7 @@ void JSONNodeDumper::VisitDeclRefExpr(const DeclRefExpr *DRE) {
   case NOUR_Constant: JOS.attribute("nonOdrUseReason", "constant"); break;
   case NOUR_Discarded: JOS.attribute("nonOdrUseReason", "discarded"); break;
   }
+  attributeOnlyIfTrue("isImmediateEscalating", DRE->isImmediateEscalating());
 }
 
 void JSONNodeDumper::VisitSYCLUniqueStableNameExpr(
@@ -1405,6 +1411,7 @@ void JSONNodeDumper::VisitCXXConstructExpr(const CXXConstructExpr *CE) {
   attributeOnlyIfTrue("initializer_list", CE->isStdInitListInitialization());
   attributeOnlyIfTrue("zeroing", CE->requiresZeroInitialization());
   attributeOnlyIfTrue("hadMultipleCandidates", CE->hadMultipleCandidates());
+  attributeOnlyIfTrue("isImmediateEscalating", CE->isImmediateEscalating());
 
   switch (CE->getConstructionKind()) {
   case CXXConstructExpr::CK_Complete:

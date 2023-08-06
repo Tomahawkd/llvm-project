@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include <__assert>
+#include <__thread/id.h>
 #include <limits>
 #include <mutex>
 
@@ -24,10 +25,6 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 #ifndef _LIBCPP_HAS_NO_THREADS
-
-const defer_lock_t  defer_lock{};
-const try_to_lock_t try_to_lock{};
-const adopt_lock_t  adopt_lock{};
 
 // ~mutex is defined elsewhere
 
@@ -50,7 +47,7 @@ mutex::unlock() noexcept
 {
     int ec = __libcpp_mutex_unlock(&__m_);
     (void)ec;
-    _LIBCPP_ASSERT(ec == 0, "call to mutex::unlock failed");
+    _LIBCPP_ASSERT_UNCATEGORIZED(ec == 0, "call to mutex::unlock failed");
 }
 
 // recursive_mutex
@@ -66,7 +63,7 @@ recursive_mutex::~recursive_mutex()
 {
     int e = __libcpp_recursive_mutex_destroy(&__m_);
     (void)e;
-    _LIBCPP_ASSERT(e == 0, "call to ~recursive_mutex() failed");
+    _LIBCPP_ASSERT_UNCATEGORIZED(e == 0, "call to ~recursive_mutex() failed");
 }
 
 void
@@ -82,7 +79,7 @@ recursive_mutex::unlock() noexcept
 {
     int e = __libcpp_recursive_mutex_unlock(&__m_);
     (void)e;
-    _LIBCPP_ASSERT(e == 0, "call to recursive_mutex::unlock() failed");
+    _LIBCPP_ASSERT_UNCATEGORIZED(e == 0, "call to recursive_mutex::unlock() failed");
 }
 
 bool
